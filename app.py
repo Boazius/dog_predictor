@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import re
 import random
+import os
 
 app = Flask(__name__)
 
@@ -165,5 +166,7 @@ def index():
 
     return render_template('index.html', data=parsed_data_table, prediction_pipi=prediction_pipi, prediction_kaki=prediction_kaki, combined_prediction=combined_prediction, comment=comment)
 
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))  # Default to 5000 if PORT is not set
+    app.run(host='0.0.0.0', port=port, debug=True)
