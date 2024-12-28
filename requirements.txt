@@ -1,4 +1,5 @@
 Flask
 pandas
-datetime
+scikit-learn
+numpy
 gunicorn
