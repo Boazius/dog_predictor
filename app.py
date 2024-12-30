@@ -59,18 +59,28 @@ def parse_user_input(data):
 
 def adjust_for_time_of_day(predicted_minutes, event_type, last_event_time):
     current_time = datetime.datetime.now()
-    
-    # Adjust prediction for "פיפי" based on the last event and the time of day
+    current_hour = current_time.hour
+
+    # Define nighttime hours (22:00 to 08:00)
+    is_nighttime = current_hour >= 22 or current_hour < 8
+
     if event_type == "פיפי":
-        time_diff_since_last_event = (current_time - last_event_time).total_seconds() / 60
-        
-        # If it's been over 4 hours since the last "פיפי", we expect a shorter interval
-        if time_diff_since_last_event > 240:  # 4 hours
-            return max(60, predicted_minutes)  # Predict within the 1-4 hour window for "פיפי"
+        # Longer intervals during nighttime
+        if is_nighttime:
+            max_pee_interval = 780  # 13 hours for pee at night
         else:
-            return max(60, predicted_minutes)  # Predict within a smaller window for "פיפי"
-    else:
-        return min(predicted_minutes, 540)  # For "קקי", cap prediction to 9 hours max
+            max_pee_interval = 300  # 5 hours for pee during the day
+
+        # Adjust prediction to be within the reasonable interval
+        return max(60, min(predicted_minutes, max_pee_interval))
+    else:  # For קקי or other events
+        if is_nighttime:
+            max_poop_interval = 780  # 13 hours for poop at night
+        else:
+            max_poop_interval = 360  # 6 hours for poop during the day
+
+        return max(60, min(predicted_minutes, max_poop_interval))
+
 
 def predict_next_event(parsed_data, event_type):
     if not parsed_data:
@@ -85,12 +95,11 @@ def predict_next_event(parsed_data, event_type):
     is_outdated = (current_date - latest_timestamp).days > 0 or (current_date - latest_timestamp).seconds > 36000  # Data older than 10 hours
 
     # Filter data for the event type, including combined events
-    filtered_data = [entry for entry in parsed_data if event_type in entry.get('Event', '') or 
-                     ("פיפי" in entry.get('Event', '') and "קקי" in entry.get('Event', ''))]
+    filtered_data = [entry for entry in parsed_data if event_type in entry.get('Event', '') or ("פיפי" in entry.get('Event', '') and "קקי" in entry.get('Event', ''))]
     if not filtered_data:
         return f"No valid {event_type} events found.", None
 
-    # Extract timestamps and calculate time differences between consecutive events
+    # Extract timestamps and calculate time differences
     timestamps = []
     for entry in filtered_data:
         time_str = entry.get('Time', "")
@@ -102,14 +111,15 @@ def predict_next_event(parsed_data, event_type):
     if len(timestamps) < 2:
         return "Not enough data to make a prediction.", None
 
+    # Sort timestamps and calculate time differences between consecutive events
     timestamps = sorted(timestamps)
     time_differences = [(timestamps[i] - timestamps[i - 1]).total_seconds() / 60 for i in range(1, len(timestamps))]
 
-    # Calculate the average interval
+    # Step 1: Interval-Based Prediction (Average of intervals)
     avg_interval = sum(time_differences) / len(time_differences)
     baseline_prediction_time = timestamps[-1] + datetime.timedelta(minutes=avg_interval)
 
-    # Apply Exponential Smoothing for better trend prediction
+    # Step 2: Exponential Smoothing for Trends
     if len(time_differences) > 2:
         smoothing_model = ExponentialSmoothing(time_differences, trend='add', seasonal=None, damped_trend=False)
         smoothing_fit = smoothing_model.fit()
@@ -119,19 +129,24 @@ def predict_next_event(parsed_data, event_type):
 
     smoothing_prediction_time = timestamps[-1] + datetime.timedelta(minutes=smoothed_interval)
 
-    # Apply Neural Network prediction
+    # Step 3: Neural Network for Advanced Prediction
     if len(time_differences) >= 5:
-        X = np.array(range(len(time_differences))).reshape(-1, 1)
-        y = np.array(time_differences)
+        # Prepare data for neural network
+        X = np.array(range(len(time_differences))).reshape(-1, 1)  # Index as feature
+        y = np.array(time_differences)  # Intervals as target
+
+        # Train neural network
         nn_model = MLPRegressor(hidden_layer_sizes=(50,), max_iter=500, random_state=42)
         nn_model.fit(X, y)
+
+        # Predict next interval
         next_interval = nn_model.predict([[len(time_differences)]])[0]
     else:
         next_interval = smoothed_interval  # Fallback to smoothing prediction
 
     nn_prediction_time = timestamps[-1] + datetime.timedelta(minutes=next_interval)
 
-    # Combine predictions (weighted average)
+    # Combine Predictions: Weighted Average
     baseline_seconds = (baseline_prediction_time - timestamps[-1]).total_seconds()
     smoothing_seconds = (smoothing_prediction_time - timestamps[-1]).total_seconds()
     nn_seconds = (nn_prediction_time - timestamps[-1]).total_seconds()
@@ -144,49 +159,25 @@ def predict_next_event(parsed_data, event_type):
 
     final_prediction_time = timestamps[-1] + datetime.timedelta(seconds=combined_seconds)
 
-    # Handle "פיפי קקי" combined event for adjusted prediction
-    combined_pipi_time = None
-    for entry in parsed_data:
-        event = entry.get('Event', "")
-        if "פיפי" in event and "קקי" in event:
-            combined_pipi_time = datetime.datetime.strptime(entry.get('Date') + ' ' + entry.get('Time'), "%d/%m/%Y %H:%M")
-            break
-
-    if combined_pipi_time:
-        # Predict next "פיפי" based on "פיפי קקי" event
-        pipi_interval = 120  # Predict next "פיפי" within 2 hours after a combined "פיפי קקי"
-        adjusted_pipi_prediction = combined_pipi_time + datetime.timedelta(minutes=pipi_interval)
-
-        # Ensure the prediction is not too far in the future
-        if adjusted_pipi_prediction < current_date:
-            adjusted_pipi_prediction = current_date + datetime.timedelta(minutes=60)  # At least 1 hour ahead
-
-        final_prediction_time = min(final_prediction_time, adjusted_pipi_prediction)
-
-    # Cap the maximum interval for any prediction
-    MAX_REASONABLE_INTERVAL = 540  # 9 hours in minutes
+    # Cap Maximum Reasonable Interval for all event types (in minutes)
+    MAX_REASONABLE_INTERVAL = 780  # 13 hours in minutes
     predicted_interval_minutes = (final_prediction_time - timestamps[-1]).total_seconds() / 60
 
     if predicted_interval_minutes > MAX_REASONABLE_INTERVAL:
         final_prediction_time = timestamps[-1] + datetime.timedelta(minutes=MAX_REASONABLE_INTERVAL)
 
-    # Adjust for time of day and final prediction
+    # Adjust final prediction based on time of day and event type
     adjusted_interval = adjust_for_time_of_day((final_prediction_time - timestamps[-1]).total_seconds() / 60, event_type, timestamps[-1])
     final_prediction_time = timestamps[-1] + datetime.timedelta(minutes=adjusted_interval)
 
     # Ensure the final prediction is in the future
     if final_prediction_time <= current_date:
-        final_prediction_time = current_date + datetime.timedelta(minutes=60)
+        final_prediction_time = current_date + datetime.timedelta(minutes=max(avg_interval, 1))
 
-    # Return the final prediction
-    prediction = f"Next event {event_type} will be at {final_prediction_time.strftime('%H:%M')} on {final_prediction_time.strftime('%A')}, {final_prediction_time.strftime('%d/%m/%Y')}"
+    # Return Prediction and Last Timestamp, include "outdated" warning
+    prediction = f"Next event {event_type} will be at {final_prediction_time.strftime('%H:%M')} on {final_prediction_time.strftime('%A')}, {final_prediction_time.strftime('%d/%m/%Y')}."
 
     return prediction, latest_timestamp if is_outdated else None
-
-
-
-
-
 
 
 @app.route('/', methods=['GET', 'POST'])
